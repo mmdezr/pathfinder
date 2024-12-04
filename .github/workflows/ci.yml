@@ -1,0 +1,72 @@
+name: CI Pipeline
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+jobs:
+  archetype:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Verificar archivo pom.xml
+        run: |
+          if [ -f pom.xml ]; then
+            echo "pom.xml found"
+          else
+            echo "Error: pom.xml not found."
+            exit 1
+          fi
+
+      - name: Extraer coordenadas Maven
+        run: |
+          GROUP=$(mvn help:evaluate -Dexpression=project.groupId -q -DforceStdout)
+          ARTIFACT=$(mvn help:evaluate -Dexpression=project.artifactId -q -DforceStdout)
+          VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          echo "group=${GROUP}" >> $GITHUB_OUTPUT
+          echo "artifact=${ARTIFACT}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+  build:
+    runs-on: ubuntu-22.04
+    needs: archetype
+    steps:
+      - name: Restaurar dependencias desde cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-dependencies-${{ needs.archetype.outputs.artifact }}-${{ needs.archetype.outputs.version }}
+
+      - name: Compilar y probar el proyecto
+        run: mvn clean compile test package verify
+
+      - name: Subir artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: target/*.jar
+  coverage-check:
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - name: Descargar reporte de cobertura
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+
+      - name: Verificar cobertura mínima
+        run: |
+          THRESHOLD=80
+          COVERAGE=$(grep -Po '<line-rate>\K[0-9.]+' target/site/jacoco/index.html | awk '{print $1 * 100}')
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "Coverage below threshold: $COVERAGE%"
+            exit 1
+          fi
+          echo "Coverage meets the threshold: $COVERAGE%"
+
